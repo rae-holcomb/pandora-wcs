@@ -24,8 +24,8 @@ class WCSFitter(object):
 
     def __init__(self, ra:u.Quantity, dec:u.Quantity, roll:u.Quantity, 
                  detector: detector.TessDetector,  #<- Note: change this later to a generic detector class
-                 crpix1: int = None, crpix2: int = None, order: int = 3,
-                 ):
+                 crpix1: int = None, crpix2: int = None, order: int = 3,             
+    ):
         ...
         self.dectector = detector
         self.shape = self.detector.shape
@@ -53,7 +53,7 @@ class WCSFitter(object):
     # build scene model
     def _build_scene_model(self, catalog):
         """
-        Docstring
+        OUT OF DATE
         Note: might later need to build in capability to distort the model.
 
         Parameters:
@@ -71,9 +71,9 @@ class WCSFitter(object):
         pix_x, pix_y = self.wcs.all_world2pix(catalog['ra'], catalog['dec'], 0)
 
         # build the model
-        model = [multivariate_normal(mean=[pix_x[i],pix_y[i]], cov=[[1,0],[0,1]]).pdf(model_grid) * fluxes[i] for i in range(len(catalog))]
+        # model = [multivariate_normal(mean=[pix_x[i],pix_y[i]], cov=[[1,0],[0,1]]).pdf(model_grid) * fluxes[i] for i in range(len(catalog))]
 
-        return model
+        # return model
 
 
     def fit_sources(self, tpf, catalog, distortion_file=None):

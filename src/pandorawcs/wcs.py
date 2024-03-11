@@ -64,35 +64,37 @@ def get_wcs(
     hdu.header["CDELT1"] = detector.pixel_scale.to(u.deg / u.pixel).value * (-1) ** (int(xreflect))
     hdu.header["CDELT2"] = detector.pixel_scale.to(u.deg / u.pixel).value * (-1) ** (int(yreflect))
     
-    if distortion_file is not None:
-        wcs = _get_distorted_wcs(
-            detector, hdu.header, distortion_file, order=order
-        )
-    else:
-        wcs = WCS(hdu.header)
+    # if distortion_file is not None:
+    #     wcs = _get_distorted_wcs(
+    #         detector, hdu.header, distortion_file, order=order
+    #     )
+    # else:
+    #     wcs = WCS(hdu.header)
+
+    wcs = WCS(hdu.header)
     return wcs
 
-def read_distortion_file(detector: Detector, distortion_file: str):
-    """Helper function to read a distortion file.
+# def read_distortion_file(detector: Detector, distortion_file: str):
+#     """Helper function to read a distortion file.
 
-    This file must be a CSV file that contains a completely "square" grid of pixels
-    "Parax X" and "Parax Y", and a corresponding set of distorted pixel positions
-    "Real X" and "Real Y". These should be centered CRPIX1 and CRPIX2.
+#     This file must be a CSV file that contains a completely "square" grid of pixels
+#     "Parax X" and "Parax Y", and a corresponding set of distorted pixel positions
+#     "Real X" and "Real Y". These should be centered CRPIX1 and CRPIX2.
 
-    Parameters:
-    -----------
-    distortion_file: str
-        File path to a distortion CSV file.
+#     Parameters:
+#     -----------
+#     distortion_file: str
+#         File path to a distortion CSV file.
 
-    Returns:
-    --------
-    X : np.ndarray
-        X pixel positions in undistorted frame, centered around CRPIX1
-    Y : np.ndarray
-        Y pixel positions in undistorted frame, centered around CRPIX2
-    Xp : np.ndarray
-        X pixel positions in distorted frame, centered around CRPIX1
-    Yp : np.ndarray
-        Y pixel positions in distorted frame, centered around CRPIX2
-    """
-    raise NotImplementedError
+#     Returns:
+#     --------
+#     X : np.ndarray
+#         X pixel positions in undistorted frame, centered around CRPIX1
+#     Y : np.ndarray
+#         Y pixel positions in undistorted frame, centered around CRPIX2
+#     Xp : np.ndarray
+#         X pixel positions in distorted frame, centered around CRPIX1
+#     Yp : np.ndarray
+#         Y pixel positions in distorted frame, centered around CRPIX2
+#     """
+#     raise NotImplementedError
