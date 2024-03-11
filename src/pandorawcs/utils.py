@@ -330,7 +330,8 @@ def get_sky_catalog(
     return cat
 
 
-
+def custom_sigma_clip() -> np.ndarray():
+    raise NotImplementedError
 
 # Class for managing sparse 3D matrices, originally copied from pandorapsf to avoid a package dependency
 

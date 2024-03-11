@@ -20,23 +20,28 @@ class SceneFitter():
 
     def __init__(self, data, ra, dec, roll):
         """
-        data : np.ndarray
-            data is an array, also contains the flux errors (possibly split this up, depending on how the data comes in)
+        data : astropy.io.fits.hdu.hdulist.HDUList
+            Assume that data is coming in from a fits file, formatted (for now) like TESS, but to be changed to the format that Ben is using in pandorsim.
         """
         # the three big ones
         self.wcs = None
         self.psf = None #-> Can be set to our known Pandora PSF either from LLNL or from commissioning
         self.flux = None
 
-        # other helpful attributes to track
+        # other attributes that will change as we fit the psf
         self.ss_mask = None   # the single source mask
         self.source_mask = None    # mask to remove certain sources from the catalog
+
+        # useful attributes that won't change
+        self.shape = None
+        # something to represent the center of the image?
 
         # string to record what was done here
         self.record = None
 
         # functions to call automatically
         self.catalog = self._initial_get_catalog(self.ra, self.dec)
+        # get the X0 and Y0 pixel positions from the WCS
 
 
     # These functions are "collected" versions of their processes, fill out later
@@ -75,6 +80,14 @@ class SceneFitter():
     def estimate_complex_psf() -> np.ndarray:
         ...
 
+    def _convert_to_radial_coordinates() -> np.ndarray:
+        """May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting."""
+        ...
+
+    def custom_sigma_clip() -> np.ndarray():
+        """Still deciding if this lives here or in utils.py"""
+        raise NotImplementedError
+
 
     # FUNCTIONS FOR REFINING THE SINGLE SOURCE MASK
     def calc_contamination_ratio(self, tolerance=0.99):
@@ -91,7 +104,6 @@ class SceneFitter():
         """Calculates the single source mask for a given psf."""
         cont_ratio = self.calc_contamination_ratio()
         self.ss_mask = cont_ratio > tolerance     # <-- just update, or also return?
-
 
 
     # FUNCTIONS FOR FLUX FITTING
@@ -142,9 +154,11 @@ class SceneFitter():
         # plot model psf
         # plot single source mask
         # plot contamination ratio
-        
 
 
+
+    # SAVING AND LOADING FUNCTIONS
+        # TBD
 
 
 def apply_X_matrix() -> np.ndarray:

@@ -221,3 +221,109 @@ class SimFile(object):
             An image populated with sources from the catalog.
         """
         ...
+
+
+    def save_visda(
+        self,
+        outfile: str = 'pandora_'+Time.now().strftime('%Y-%m-%dT%H:%M:%S')+'_l1_visda.fits',
+        rois: bool = False,
+        overwrite: bool = True,
+    ):
+        """
+        COPIED FROM BEN'S PANDORASIM, ADJUST TO FIT LATER.
+        Function to save FFIs in the FITS format.
+        """
+        if not hasattr(self, "ffis"):
+            raise AttributeError('Please create FFIs first with .get_FFIs() command!')
+
+        corstime = int(np.floor((self.obstime - Time("2000-01-01T12:00:00", scale='utc')).sec))
+        finetime = int(corstime % 1 * 10**9 // 1)
+
+        primary_kwds = {
+            'EXTNAME': ('PRIMARY', 'name of extension'),
+            'NEXTEND': (2, 'number of standard extensions'),
+            'SIMDATA': (True, 'simulated data'),
+            'SCIDATA': (False, 'science data'),
+            'TELESCOP': ('NASA Pandora', 'telescope'),
+            'INSTRMNT': ('VISDA', 'instrument'),
+            'CREATOR': ('Pandora DPC', 'creator of this product'),
+            'CRSOFTV': ('v'+str(__version__), 'creator software version'),
+            'TARG_RA': (self.ra.value, 'target right ascension [deg]'),
+            'TARG_DEC': (self.dec.value, 'target declination [deg]'),
+            'FRMSREQD': (self.ffi_nframes, 'number of frames requested'),
+            'FRMSCLCT': (self.ffi_nframes, 'number of frames collected'),
+            'NUMCOAD': (1, 'number of frames coadded'),
+            'FRMTIME': (self.ffi_nreads * self.VISDA.integration_time.value, 'time in each frame [s]'),
+            'EXPDELAY': (-1, 'exposure time delay [ms]'),
+            'RICEX': (-1, 'bit noise parameter for Rice compression'),
+            'RICEY': (-1, 'bit noise parameter for Rice compression'),
+            'CORSTIME': (corstime, 'seconds since the TAI Epoch (12PM Jan 1, 2000)'),
+            'FINETIME': (finetime, 'nanoseconds added to CORSTIME seconds'),
+        }
+
+        if rois:
+            n_arrs, frames, nrows, ncols = self.subarrays.shape
+
+            # Find the next largest perfect square from the number of subarrays given
+            next_square = int(np.ceil(np.sqrt(n_arrs)) ** 2)
+            sq_sides = int(np.sqrt(next_square))
+
+            # Pad the subarrays with addtional subarrays full of zeros up to the next perfect square
+            subarrays = self.subarrays
+            padding = np.zeros((next_square - n_arrs, frames, nrows, ncols), dtype=int)
+            subarrays = np.append(subarrays, padding, axis=0)
+
+            image_data = (subarrays.reshape(frames, sq_sides, sq_sides, nrows, ncols)
+                          .swapaxes(2, 3)
+                          .reshape(frames, sq_sides*nrows, sq_sides*ncols))
+
+            roi_data = Table(self.VISDA.corners)
+
+            roitable_kwds = {
+                'NAXIS': (2, 'number of array dimensions'),
+                'NAXIS1': (len(self.VISDA.corners[0]), 'length of dimension 1'),
+                'NAXIS2': (len(self.VISDA.corners), 'length of dimension 2'),
+                'PCOUNT': (0, 'number of group parameters'),
+                'GCOUNT': (1, 'number of groups'),
+                'TFIELDS': (2, 'number of table fields'),
+                'TTYPE1': ('Column', 'table field 1 type'),
+                'TFORM1': ('I21', 'table field 1 format'),
+                'TUNIT1': ('pix', 'table field 1 unit'),
+                'TBCOL1': (1, ''),
+                'TTYPE2': ('Row', 'table field 2 type'),
+                'TFORM2': ('I21', 'table field 2 format'),
+                'TUNIT2': ('pix', 'table field 2 unit'),
+                'TBCOL2': (22, ''),
+                'EXTNAME': ('ROITABLE', 'name of extension'),
+                'NROI': (len(self.VISDA.corners), 'number of regions of interest'),
+                'ROISTRTX': (-1, 'region of interest origin position in column'),
+                'ROISTRTY': (-1, 'region of interest origin position in row'),
+                'ROISIZEX': (-1, 'region of interest size in column'),
+                'ROISIZEY': (-1, 'region of interest size in row'),
+            }
+        else:
+            image_data = self.ffis
+
+        image_kwds = {
+            'NAXIS': (3, 'number of array dimensions'),
+            'NAXIS1': (image_data.shape[1], 'first axis size'),  # might need to change these
+            'NAXIS2': (image_data.shape[2], 'second axis size'),
+            'NAXIS3': (image_data.shape[0], 'third axis size'),
+            'EXTNAME': ('SCIENCE', 'extension name'),
+            'TTYPE1': ('COUNTS', 'data title: raw pixel counts'),
+            'TFORM1': ('J', 'data format: images of unsigned 32-bit integers'),
+            'TUNIT1': ('count', 'data units: count'),
+        }
+
+        if rois:
+            save_to_FITS(
+                image_data,
+                outfile,
+                primary_kwds,
+                image_kwds,
+                roitable=True,
+                roitable_kwds=roitable_kwds,
+                roi_data=roi_data,
+                overwrite=overwrite)
+        else:
+            save_to_FITS(image_data, outfile, primary_kwds, image_kwds, overwrite=overwrite)
