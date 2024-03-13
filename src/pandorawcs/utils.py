@@ -1,6 +1,8 @@
 # Standard library
 import numpy as np
 import warnings
+from functools import lru_cache
+
 
 # Third-party
 from astropy.stats import sigma_clip
@@ -18,7 +20,7 @@ from copy import deepcopy
 def fit_bkg(
         tpf, polyorder: int = 1  # : lk.TessTargetPixelFile
 ) -> np.ndarray:
-    """Fit a simple 2d polynomial background to a TPF
+    """Fit a simple 2d polynomial background to a TPF. TESS-specific.
 
     Parameters
     ----------
@@ -161,7 +163,7 @@ def apply_affine_transform(
         x: np.array, y: np.array,
         crpix1: int, crpix2: int,
         M: np.array,
-) -> (np.array, np.array) :
+) -> (np.ndarray, np.array) :
     """Docstring.
     Rotation is in RADIANS.
     Scale should always be positive.
@@ -228,6 +230,95 @@ def dgaussian_2d(x, y, mu_x, mu_y, sigma_x=2, sigma_y=2):
     dG_x = -(x - mu_x)/sigma_x**2
     dG_y = -(y - mu_y)/sigma_y**2
     return dG_x, dG_y
+
+
+
+#  QUERY FUNCTIONS
+
+@lru_cache()
+def _query_gaia(query_str):
+    job = Gaia.launch_job_async(query_str, verbose=False)
+    tbl = job.get_results()
+    return deepcopy(tbl)
+
+def get_sky_catalog_psf(
+    ra=210.8023,
+    dec=54.349,
+    radius=0.155,
+    grpmagnitude_range=(-3, 20),
+    epoch=Time.now(),
+    limit=None,
+    gaia_keys=[
+        "source_id",
+        "ra",
+        "dec",
+        "parallax",
+        "pmra",
+        "pmdec",
+        "radial_velocity",
+        "ruwe",
+        "phot_rp_mean_flux",
+        "teff_gspphot",
+        "logg_gspphot",
+    ],
+):
+    """Gets a catalog of coordinates on the sky based on an input ra, dec and radius"""
+
+    query_str = f"""
+    SELECT {f'TOP {limit} ' if limit is not None else ''}* FROM (
+        SELECT gaia.{', gaia.'.join(gaia_keys)}, dr2.teff_val AS dr2_teff_val,
+        dr2.rv_template_logg AS dr2_logg, tmass.j_m, tmass.j_msigcom, tmass.ph_qual, DISTANCE(
+        POINT({u.Quantity(ra, u.deg).value}, {u.Quantity(dec, u.deg).value}),
+        POINT(gaia.ra, gaia.dec)) AS ang_sep,
+        EPOCH_PROP_POS(gaia.ra, gaia.dec, gaia.parallax, gaia.pmra, gaia.pmdec,
+        gaia.radial_velocity, gaia.ref_epoch, 2000) AS propagated_position_vector
+        FROM gaiadr3.gaia_source AS gaia
+        JOIN gaiadr3.tmass_psc_xsc_best_neighbour AS xmatch USING (source_id)
+        JOIN gaiadr3.dr2_neighbourhood AS xmatch2 ON gaia.source_id = xmatch2.dr3_source_id
+        JOIN gaiadr2.gaia_source AS dr2 ON xmatch2.dr2_source_id = dr2.source_id
+        JOIN gaiadr3.tmass_psc_xsc_join AS xjoin USING (clean_tmass_psc_xsc_oid)
+        JOIN gaiadr1.tmass_original_valid AS tmass ON
+        xjoin.original_psc_source_id = tmass.designation
+        WHERE 1 = CONTAINS(
+        POINT({u.Quantity(ra, u.deg).value}, {u.Quantity(dec, u.deg).value}),
+        CIRCLE(gaia.ra, gaia.dec, {(u.Quantity(radius, u.deg) + 50*u.arcsecond).value}))
+        AND gaia.parallax IS NOT NULL
+        AND gaia.phot_rp_mean_mag > {grpmagnitude_range[0]}
+        AND gaia.phot_rp_mean_mag < {grpmagnitude_range[1]}) AS subquery
+    WHERE 1 = CONTAINS(
+    POINT({u.Quantity(ra, u.deg).value}, {u.Quantity(dec, u.deg).value}),
+    CIRCLE(COORD1(subquery.propagated_position_vector), COORD2(subquery.propagated_position_vector), {u.Quantity(radius, u.deg).value}))
+    ORDER BY ang_sep ASC
+    """
+    tbl = _query_gaia(query_str)
+    if len(tbl) == 0:
+        raise ValueError("Could not find matches.")
+
+    tbl = tbl.to_pandas()
+    k = (~np.isfinite(tbl["parallax"])) | (tbl["parallax"] < 0)
+    tbl.loc[k, "parallax"] = 0
+    k = ~np.isfinite(tbl["logg_gspphot"])
+    tbl.loc[k, "logg_gspphot"] = tbl["dr2_logg"][k]
+    k = ~np.isfinite(tbl["teff_gspphot"])
+    tbl.loc[k, "teff_gspphot"] = tbl["dr2_teff_val"][k]
+    k = ~np.isfinite(tbl["ruwe"])
+    tbl.loc[k, "ruwe"] = 99
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        c = SkyCoord(
+            ra=tbl["ra"] * u.deg,
+            dec=tbl["dec"] * u.deg,
+            pm_ra_cosdec=np.nan_to_num(tbl["pmra"]) * u.mas / u.year,
+            pm_dec=np.nan_to_num(tbl["pmdec"]) * u.mas / u.year,
+            obstime=Time.strptime("2016", "%Y"),
+            distance=Distance(
+                parallax=np.asarray(tbl["parallax"]) * u.mas, allow_negative=True
+            ),
+            radial_velocity=np.nan_to_num(tbl["radial_velocity"]) * u.km / u.s,
+        ).apply_space_motion(epoch)
+        tbl["RA_EPOCH"] = c.ra.deg
+        tbl["DEC_EPOCH"] = c.dec.deg
+    return tbl
 
 def get_sky_catalog(
     ra=210.8023,
@@ -330,7 +421,7 @@ def get_sky_catalog(
     return cat
 
 
-def custom_sigma_clip() -> np.ndarray():
+def custom_sigma_clip() -> np.ndarray:
     raise NotImplementedError
 
 # Class for managing sparse 3D matrices, originally copied from pandorapsf to avoid a package dependency
