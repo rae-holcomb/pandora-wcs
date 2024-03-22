@@ -15,32 +15,48 @@ from astroquery.gaia import Gaia
 from scipy import sparse
 from tqdm import tqdm
 from astropy.io import fits
+import matplotlib.pyplot as plt
 
 class SceneFitter():
 
-    def __init__(self, hdulist, catalog, wcs=None):
+    def __init__(self, hdulist, catalog, cutout=None, wcs=None):
         """
         Temporary init function where I can pass stuff in for ease of use.
         """
-        self.data = hdulist[1].data
-        self.err = hdulist[2].data
+        if cutout is None :
+            # Note: For many data types (including TESS FFIs), this default cutout will be wrong since it doesn't take into account junk and science columns.
+            self.cutout = [[0, hdulist[1].header['NAXIS1']],
+                            [0, hdulist[1].header['NAXIS2']]]
+        else :
+            self.cutout = cutout
+
+        # get the cutout of the data
+        self.R, self.C = np.mgrid[self.cutout[0][0]:self.cutout[0][1], 
+                                  self.cutout[1][0]:self.cutout[1][1]]
+        self.shape = self.R.shape
+        self.shapeT = self.R.T.shape
+        self.naxis1 = cutout[0][1] - cutout[0][0]
+        self.naxis2 = cutout[1][1] - cutout[1][0]
+        self.data = hdulist[1].data[self.R, self.C]
+        self.err = hdulist[2].data[self.R, self.C]
+        self.y = self.data.ravel()  # fluxes in 1D
+        self.yerr = self.err.ravel()  # flux errors in 1D
+
+        # wcs and catalog
         self.df = catalog
         if wcs is None :
             self.wcs = WCS(hdulist[1].header)
         else:
+            # TODO: add check that it is a valid wcs object
             self.wcs = wcs
 
-        # useful attributes that won't change
-        self.shape = self.data.shape
-        self.y = self.data.ravel()  # fluxes in 1D
-        self.ye = self.err.ravel()  # flux errors in 1D
-        self.R, self.C = np.mgrid[1500:1700, 1501:1700]
-        # something to represent the center of the image?
+        # center of the cutout, NOT the same as the CRPIX of the wcs
+        self.R0, self.C0 = self.R[:, 0].mean(), self.C[0].mean()
+        c = self.wcs.pixel_to_world(self.C0, self.R0)
+        self.ra0, self.dec0 = c.ra.deg, c.dec.deg
 
         # do background subtraction
         self._subtract_background()
-
-
 
         # the three big ones
         # self.wcs = None
@@ -48,6 +64,8 @@ class SceneFitter():
         # self.flux = None
 
         # other attributes that will change as we fit the psf
+        self.initial_std = 1.   # initial estimate of the std for a purely gaussian psf
+        self.gaia_flux_coeff = 1.
         self.ss_mask = np.ones(self.shape)   # the single source mask
         self.source_mask = np.ones(self.shape)    # mask to remove certain sources from the catalog
 
@@ -186,9 +204,22 @@ class SceneFitter():
     def _inital_get_catalog(self) -> astropy.table.Table:
         """calls the get_sky_catalog function from utils.py on self.ra and self.dec"""
         raise NotImplementedError 
-    
-    def _get_gaussian_scene(self, source_flux, std=1.5, x_col='X0', y_col='Y0', nstddevs=5):
-        """Creates a model image with dimensions [n_sources, x, y] where each slice contains the gaussian for a single source in the image."""
+
+    def _recover_cutout(self):
+        cutout = [[self.R0 - (self.naxis1-1)/2, 
+                self.R0 + (self.naxis1+1)/2],
+                [self.C0 - (self.naxis2-1)/2,
+                self.C0 + (self.naxis2+1)/2]]
+        return cutout
+
+
+    def _get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
+        """Creates a model image with dimensions [n_sources, x, y] where each slice contains the gaussian for a single source in the image. Also calculates the x and y gradients of the gaussian scene."""
+        if std is None:
+            std = self.initial_std
+        if source_flux is None:
+            source_flux = self.df['phot_rp_mean_flux'].values
+
         # row and column grids
         gR, gC = np.mgrid[
             np.floor(-nstddevs * std) : np.ceil(nstddevs * std + 1),
@@ -196,8 +227,8 @@ class SceneFitter():
         ]
 
         gauss = utils.gaussian_2d(
-            gC[:, :, None],
             gR[:, :, None],
+            gC[:, :, None],
             np.asarray(self.df[x_col] % 1),
             np.asarray(self.df[y_col] % 1),
             np.atleast_1d(std),
@@ -206,69 +237,60 @@ class SceneFitter():
 
         s = utils.SparseWarp3D(
                 gauss * source_flux,
-                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 gR[:, :, None] + np.asarray(np.floor(self.df[x_col] - self.R[0, 0])).astype(int),
+                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 self.shape,
+                # self.shape,
             )
         
-        return s
-
-    def _get_gaussian_gradients(self, source_flux, std=1.5, x_col='X0', y_col='Y0', nstddevs=5):
-        """Calculates the x and y gradients of the gaussian scene."""
-        # row and column grids
-        gR, gC = np.mgrid[
-            np.floor(-nstddevs * std) : np.ceil(nstddevs * std + 1),
-            np.floor(-nstddevs * std) : np.ceil(nstddevs * std) + 1,
-        ]
-
-        gauss = utils.gaussian_2d(
-            gC[:, :, None],
+        dG_x, dG_y = utils.dgaussian_2d(
             gR[:, :, None],
+            gC[:, :, None],
             np.asarray(self.df[x_col] % 1),
             np.asarray(self.df[y_col] % 1),
             np.atleast_1d(std),
             np.atleast_1d(std),
         )
 
-        dG_x, dG_y = utils.dgaussian_2d(
-            gC[:, :, None],
-            gR[:, :, None],
-            np.asarray(self.df[x_col] % 1),
-            np.asarray(self.df['Y0'] % 1),
-            np.atleast_1d(std),
-            np.atleast_1d(std),
-        )
-
         ds_x = utils.SparseWarp3D(
                 dG_x * gauss * source_flux,
-                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 gR[:, :, None] + np.asarray(np.floor(self.df[x_col] - self.R[0, 0])).astype(int),
+                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 self.shape,
             ).sum(axis=1)
         
         ds_y = utils.SparseWarp3D(
                 dG_y *  gauss * source_flux,
-                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 gR[:, :, None] + np.asarray(np.floor(self.df[x_col] - self.R[0, 0])).astype(int),
+                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
                 self.shape,
             ).sum(axis=1)
         
-        return ds_x, ds_y
-
-    def _get_gaussian_design_matrix(self, source_flux, std=1.5, x_col='X0', y_col='Y0', nstddevs=5):
+        return s, ds_x, ds_y
+    
+    def _get_gaussian_design_matrix(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
         """Calls get_gaussian_scene and get_gaussian_gradients in order to build the design matrix."""
-        s = self._get_gaussian_scene(
+        if std is None:
+            std = self.initial_std
+        if source_flux is None:
+            source_flux = self.df['phot_rp_mean_flux'].values
+
+        s, ds_x, ds_y = self._get_gaussian_scene(
             source_flux, std=std, x_col=x_col, y_col=y_col, nstddevs=nstddevs
             )
-        
-        ds_x, ds_y = self._get_gaussian_gradients(
-            source_flux, std=std, x_col=x_col, y_col=y_col, nstddevs=nstddevs
-            )
-        
         components = [s, ds_x, ds_y]
         return sparse.hstack(components, 'csr')
 
-        
+    def get_flat_gaussian_model(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
+        """Returns a 2D gaussian scene made with a simple gaussian PSF."""
+        if std is None:
+            std = self.initial_std
+        if source_flux is None:
+            source_flux = self.df['phot_rp_mean_flux'].values
+            
+        s, _, _ = self._get_gaussian_scene(source_flux=source_flux, std=std, x_col=x_col, y_col=y_col, nstddevs=nstddevs)
+
+        return s.sum(axis=1)
 
 
     def _subtract_background(self) -> np.ndarray:
@@ -315,6 +337,38 @@ class SceneFitter():
     # SAVING AND LOADING FUNCTIONS
         # TBD
 
+    # DEPRECATED
+    def OLD_get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
+        """Creates a model image with dimensions [n_sources, x, y] where each slice contains the gaussian for a single source in the image."""
+        # row and column grids
+        if std is None:
+            std = self.initial_std
+        if source_flux is None:
+            source_flux = self.df['phot_rp_mean_flux'].values
+        
+        gR, gC = np.mgrid[
+            np.floor(-nstddevs * std) : np.ceil(nstddevs * std + 1),
+            np.floor(-nstddevs * std) : np.ceil(nstddevs * std) + 1,
+        ]
+
+        gauss = utils.gaussian_2d(
+            gC[:, :, None],
+            gR[:, :, None],
+            np.asarray(self.df[x_col] % 1),
+            np.asarray(self.df[y_col] % 1),
+            np.atleast_1d(std),
+            np.atleast_1d(std),
+        )
+
+        s = utils.SparseWarp3D(
+                gauss * source_flux,
+                gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
+                gR[:, :, None] + np.asarray(np.floor(self.df[x_col] - self.R[0, 0])).astype(int),
+                self.shape,
+            )
+        
+        return s
+
 
 def apply_X_matrix() -> np.ndarray:
     # will also handle errors and priors for me
@@ -322,6 +376,10 @@ def apply_X_matrix() -> np.ndarray:
 
 def assemble_X_matrix() -> np.ndarray:
     ...
+
+
+
+
 
 
 # def _fit_linear_model()
