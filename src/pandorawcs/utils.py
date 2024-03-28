@@ -163,7 +163,7 @@ def apply_affine_transform(
         x: np.array, y: np.array,
         crpix1: int, crpix2: int,
         M: np.array,
-) -> (np.ndarray, np.array) :
+) -> Tuple(np.ndarray, np.ndarray) :
     """Docstring.
     Rotation is in RADIANS.
     Scale should always be positive.
