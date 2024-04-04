@@ -50,9 +50,18 @@ class SceneFitter():
         self.naxis2 = cutout[1][1] - cutout[1][0]
         self.data = hdulist[1].data[self.R, self.C]
         self.err = hdulist[2].data[self.R, self.C]
+
+        # do operations to the data in order to prepare it nicely
         self._subtract_background() # do background subtraction
-        self.y = self.data.ravel()  # fluxes in 1D
-        self.yerr = self.err.ravel()  # flux errors in 1D
+        self.saturation_mask = self._make_saturation_mask(saturation_limit=1e5, mask_adjacent=True, inplace=True)
+
+        # masked data
+        # might change these to a property later
+        self.y = np.ma.masked_where(self.saturation_mask.ravel(), self.data.ravel())  # fluxes in 1D
+        self.yerr = np.ma.masked_where(self.saturation_mask.ravel(), self.err.ravel())  # flux errors in 1D
+
+        # self.y = self.data.ravel()  # fluxes in 1D
+        # self.yerr = self.err.ravel()  # flux errors in 1D
 
        # catalog and fluxes
         self.df = catalog
@@ -92,7 +101,7 @@ class SceneFitter():
 
 
         # string to record what was done here
-        self.record = None
+        self.record = ...
 
         # # functions to call automatically
         # self.catalog = self._initial_get_catalog(self.ra, self.dec)
@@ -155,6 +164,10 @@ class SceneFitter():
     # def _update_source_flux(self) -> None:
     #     self.source_flux = self.gaia_flux * self.gaia_flux_coeff *self.source_weights
     #     pass
+        
+    def apply_mask(self, mask) -> None:
+        """Allows the user to apply an arbitrary mask to the data. Must have the dimensions specified in self.shape."""
+        ...
 
     # FUNCTIONS FOR PSF ESTIMATION
         
@@ -201,7 +214,7 @@ class SceneFitter():
         
         return cont_ratio, max_contributor_ind, max_contributor_flux
     
-    def estimate_initial_ss_mask(self, tolerance=0.99, min_flux=25, update=False) -> np.ndarray:
+    def estimate_initial_ss_mask(self, tolerance=0.99, min_flux=25, update=True) -> np.ndarray:
         """Fits a piecewise guess for the psf, then calculates the contamination ratio. Returns a mask to select single sources."""
         # possibly replace with estimate_piecewise_psf()
         # piecewise_psf = self.estimate_piecewise_psf()
@@ -341,6 +354,34 @@ class SceneFitter():
                 self.C0 + (self.naxis2+1)/2]]
         return cutout
 
+    def _get_psf_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5) -> utils.SparseWarp3D:
+        """Generates a scene from the current psf. Currently does NOT generate gradients of the scene."""    
+        if std is None:
+            std = self.initial_std
+        if source_flux is None:
+            source_flux = self.source_flux
+
+        # row and column grids
+        gR, gC = np.mgrid[
+            np.floor(-nstddevs * std) : np.ceil(nstddevs * std + 1),
+            np.floor(-nstddevs * std) : np.ceil(nstddevs * std) + 1,
+        ]
+
+        # for just one slice of the scene
+        ggR = gR[:,:,None] - np.asarray(self.df[x_col] % 1)
+        ggC = gC[:,:,None] - np.asarray(self.df[y_col] % 1)
+
+        rads = np.hypot(ggR, ggC)
+        source = np.exp(self.psf.evaluate(r=rads.ravel()).reshape(ggR.shape))
+
+        scene = utils.SparseWarp3D(
+                        source * source_flux,
+                        gR[:, :, None] + np.asarray(np.floor(self.df[x_col] - self.R[0, 0])).astype(int),
+                        gC[:, :, None] + np.asarray(np.floor(self.df[y_col] - self.C[0, 0])).astype(int),
+                        self.shape,
+                    )
+        
+        return scene
 
     def _get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
         """Creates a model image with dimensions [n_sources, x, y] where each slice contains the gaussian for a single source in the image. Also calculates the x and y gradients of the gaussian scene."""
@@ -441,6 +482,27 @@ class SceneFitter():
         ).reshape(self.data.shape)
         self.data -= bkg_model
 
+    def _make_saturation_mask(self, saturation_limit=1e5, mask_adjacent=True, inplace=True):
+        """Creates a mask of pixels that may be affected by saturation."""
+        initial_mask = self.data > saturation_limit
+        pixel_mask = initial_mask.copy()
+        
+        # If requested, check pixels above and below those with data > 1e5
+        if mask_adjacent:
+            for i in range(1, self.data.shape[0]):
+                above_mask = initial_mask[i-1, :]
+                below_mask = initial_mask[i, :]
+                
+                # Update pixel mask to include pixels above and below
+                pixel_mask[i, :] |= above_mask
+                pixel_mask[i-1, :] |= below_mask
+        
+        if inplace:
+            self.saturation_mask = pixel_mask
+
+        return pixel_mask
+
+
     def estimate_scene(self):
         """Holdover. Come back to this later."""
         # Gaussian model
@@ -460,6 +522,49 @@ class SceneFitter():
         # plot single source mask
         # plot contamination ratio
 
+    def plot_saturation_mask(self):
+        "Shows which pixels are being masked for saturation in red."
+        fig, ax = plt.subplots()
+
+        # Plot the data using plt.pcolormesh
+        mesh = ax.pcolormesh(self.C, self.R, self.data, cmap='viridis')
+
+        # Overlay the saturated pixel mask
+        masked_data = np.ma.masked_where(self.saturation_mask == False, np.ones_like(self.data))
+        ax.pcolormesh(self.C, self.R, masked_data, cmap='bwr_r')
+
+        # Add colorbar
+        cbar = plt.colorbar(mesh)
+        cbar.set_label('Data')
+
+        # Set labels and title
+        ax.set_xlabel('Column')
+        ax.set_ylabel('Row')
+        ax.set_title('Data with Saturated Pixel Mask')
+
+        return fig
+
+    def plot_radial_psf(self):
+        """Assumes that the psf is a generator object which takes in either just variable `r`, or both `r` and `th` for radius and theta.
+        
+        NOTE: PSFs with r and theta as inputs still need to be tested."""
+        thetas = np.arange(0,2*np.pi,.1)
+        rads = np.arange(0,5,.1)
+        X,Y = np.meshgrid(thetas, rads) #rectangular plot of polar data
+        # X = theta
+        # Y = rad
+
+        try:
+            # this part may need fixing later
+            data2D = self.psf.evaluate(r=X, th=Y)
+        except:
+            data2D = self.psf.evaluate(r=rads)[:, None] * np.ones_like(X)
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, polar='True')
+        pc = ax.pcolormesh(X, Y, data2D) #X,Y & data2D must all be same dimensions
+        fig.colorbar(pc, label='Normalized ln(flux)')
+        return fig
 
 
     # SAVING AND LOADING FUNCTIONS

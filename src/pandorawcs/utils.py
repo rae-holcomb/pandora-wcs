@@ -5,6 +5,8 @@ from functools import lru_cache
 
 
 # Third-party
+import operator
+from scipy.optimize import curve_fit
 from astropy.stats import sigma_clip
 from astropy.time import Time
 from astroquery.gaia import Gaia
@@ -163,7 +165,7 @@ def apply_affine_transform(
         x: np.array, y: np.array,
         crpix1: int, crpix2: int,
         M: np.array,
-) -> Tuple(np.ndarray, np.ndarray) :
+) -> Tuple[np.ndarray, np.ndarray] :
     """Docstring.
     Rotation is in RADIANS.
     Scale should always be positive.
@@ -231,6 +233,84 @@ def dgaussian_2d(x, y, mu_x, mu_y, sigma_x=2, sigma_y=2):
     dG_y = -(y - mu_y)/sigma_y**2
     return dG_x, dG_y
 
+# SIGMA CLIPPING FUNCTIONS
+# Note: Probably need to clean these up
+def select_min_group(xdata, ydata, n_bin=10):
+    """Helper function that returns the lowest y-value points for each subgroup of size n within the data."""
+    # sort the x and y values
+    sorted_data = sorted(zip(xdata,ydata), key=operator.itemgetter(0))
+    x_sort, y_sort = zip(*sorted_data)
+    x_sort, y_sort = np.array(x_sort), np.array(y_sort)
+    min_inds = np.zeros(len(xdata)//n_bin + 1).astype(int)
+
+    # loop and grab the min in each group
+    for k in np.arange(len(y_sort)//n_bin + 1) :
+    # for k in [0,1] :
+        sub_y = y_sort[(k*n_bin):(n_bin*(k+1))]
+        if len(sub_y) == 0:
+            continue
+        min_inds[k] = np.argmin(sub_y)+k*n_bin
+
+    return x_sort[min_inds], y_sort[min_inds]
+
+def select_nth_min_group(xdata, ydata, n_bin=10, k=0):
+    """Helper function that returns the kth (indexed from 0!) lowest y-value points for each subgroup of size n within the data."""
+    # sort the x and y values
+    sorted_data = sorted(zip(xdata,ydata), key=operator.itemgetter(0))
+    x_sort, y_sort = zip(*sorted_data)
+    x_sort, y_sort = np.array(x_sort), np.array(y_sort)
+    min_inds = np.zeros(len(xdata)//n_bin + 1).astype(int)
+
+    # loop and grab the min in each group
+    for ind in np.arange(len(y_sort)//n_bin + 1) :
+    # for k in [0,1] :
+        sub_y = y_sort[(ind*n_bin):(n_bin*(ind+1))]
+        if len(sub_y) < (k+1):
+            continue
+        min_inds[ind] = np.argpartition(sub_y,k)[k]+ind*n_bin
+
+    return x_sort[min_inds], y_sort[min_inds]
+
+def func_line(x, a, b):
+    return a * x + b
+
+def iterative_sigma_clip(x, y, maxiters=5, cenfunc=None, sigma_clip_kwargs=None, cenfunc_kwargs=None):
+    """Docstring"""
+    x_new = x.copy()
+    y_new = y.copy()
+    indices = np.arange(len(x_new), dtype=int)
+    
+    for i in range(maxiters):
+        # fit line
+        center = cenfunc(x_new, y_new, **cenfunc_kwargs)
+
+        # sigma clip the residuals
+        resids = y_new - center
+        filtered_data = sigma_clip(resids, maxiters=1, **sigma_clip_kwargs)
+
+        # apply the sigma clip
+        mask = ~filtered_data.mask
+        x_new = x_new[mask]
+        y_new = y_new[mask]
+        indices = indices[mask]
+
+        if sum(filtered_data.mask) == 0:
+            #this means that no points were clipped out, so exit the loop
+            # print(i)
+            break
+
+    # also create a mask that can be used on the input arrays to recreate the clipped data
+    final_mask = np.zeros_like(x, dtype=bool)
+    final_mask[indices] = True
+
+    return x_new, y_new, final_mask
+
+
+def custom_fit(xdata, ydata, n_bin=10, k=1):
+    # min_x, min_y = select_min_group(xdata, ydata, n_bin)  # maybe change this to select median? or percentile range?
+    min_x, min_y = select_nth_min_group(xdata, ydata, n_bin, k=k)
+    popt, pcov = curve_fit(func_line, min_x, min_y)
+    return func_line(xdata, *popt)
 
 
 #  QUERY FUNCTIONS
