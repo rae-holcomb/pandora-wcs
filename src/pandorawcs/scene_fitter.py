@@ -25,6 +25,8 @@ Throughout this class, I will be using the following terminology for an image th
 
 scene - an (nx, ny, N) data cube, where each slice along the N dimension contains the flux of only a single source. These should always be SparseWarp3D matrices.
 
+model_image - (x,y) 
+
 """
 
 
@@ -195,9 +197,19 @@ class SceneFitter():
     def estimate_complex_psf() -> np.ndarray:
         ...
 
-    def _convert_to_radial_coordinates() -> np.ndarray:
+    def _convert_to_radial_coordinates(self,) -> np.ndarray:
         """May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting."""
-        ...
+        # z is normalized and in log space
+        z = np.log((self.y / self.max_contributor_flux))
+        zerr = 2.5 * self.yerr/self.y * np.log(10)
+
+        # get dx, dy, r, and phi
+        dx = np.hstack(self.R.ravel() - self.df.iloc[self.max_contributor_ind]['X0'].to_numpy())
+        dy = np.hstack(self.C.ravel() - self.df.iloc[self.max_contributor_ind]['Y0'].to_numpy())
+        z, zerr, dx, dy, = z[self.ss_mask], zerr[self.ss_mask], dx[self.ss_mask], dy[self.ss_mask] 
+        r, phi = np.hypot(dx, dy), np.arctan2(dy, dx)
+
+        return r, phi, z, zerr, dx, dy
 
     def custom_sigma_clip() -> np.ndarray:
         """Still deciding if this lives here or in utils.py"""
@@ -252,7 +264,7 @@ class SceneFitter():
     # FUNCTIONS FOR FLUX FITTING
         
     def _fit_flux_coeff(self, std=None, source_flux=None) -> Tuple[float, float, float, float]:
-        """For a given standard deviation, finds a constant flux multiplier for the whole image. Depends on the current PSF. (Currently restricted to a pure gaussian psf.)
+        """For a given standard deviation, finds a constant flux multiplier for the whole image. Depends on the current psf. (Currently restricted to a pure gaussian psf.)
         
         Output: flux_coeff, dx, dy, rmse"""
         if std is None:
@@ -451,7 +463,7 @@ class SceneFitter():
         return sparse.hstack(components, 'csr')
 
     def get_flat_gaussian_model(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
-        """Returns a 2D gaussian scene made with a simple gaussian PSF."""
+        """Returns a 2D gaussian scene made with a simple gaussian psf."""
         if std is None:
             std = self.initial_std
         if source_flux is None:
@@ -522,6 +534,20 @@ class SceneFitter():
         # plot single source mask
         # plot contamination ratio
 
+    def plot_single_source_mask(self, vmin=0, vmax=300):
+        """Shows which pixels are included in the current single source mask."""
+        temp = np.ma.masked_where(~self.ss_mask.reshape(self.shape), self.data)
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        print(type(ax))
+        pc = ax.pcolormesh(self.C, self.R, temp, vmin=vmin, vmax=vmax) 
+        fig.colorbar(pc, label='Flux')
+        ax.set_xlabel('Column')
+        ax.set_ylabel('Row')
+        ax.set_title('Pixels Dominated by a Single Source')
+        return fig
+
+
     def plot_saturation_mask(self):
         "Shows which pixels are being masked for saturation in red."
         fig, ax = plt.subplots()
@@ -544,31 +570,34 @@ class SceneFitter():
 
         return fig
 
-    def plot_radial_psf(self):
+    def plot_radial_psf(self, vmin=None, vmax=None):
         """Assumes that the psf is a generator object which takes in either just variable `r`, or both `r` and `th` for radius and theta.
         
         NOTE: PSFs with r and theta as inputs still need to be tested."""
         thetas = np.arange(0,2*np.pi,.1)
         rads = np.arange(0,5,.1)
-        X,Y = np.meshgrid(thetas, rads) #rectangular plot of polar data
-        # X = theta
-        # Y = rad
+        X,Y = np.meshgrid(rads, thetas) #rectangular plot of polar data
+        # X = rad?
+        # Y = theta?
 
         try:
             # this part may need fixing later
-            data2D = self.psf.evaluate(r=X, th=Y)
+            data2D = self.psf.evaluate(r=X.ravel(), theta=Y.ravel()).reshape(X.shape)
         except:
             data2D = self.psf.evaluate(r=rads)[:, None] * np.ones_like(X)
 
+        print(data2D.shape)
         fig = plt.figure()
         ax = fig.add_subplot(111, polar='True')
-        pc = ax.pcolormesh(X, Y, data2D) #X,Y & data2D must all be same dimensions
+        pc = ax.pcolormesh(Y, X, data2D, vmin=vmin, vmax=vmax) #X,Y & data2D must all be same dimensions
         fig.colorbar(pc, label='Normalized ln(flux)')
         return fig
 
 
     # SAVING AND LOADING FUNCTIONS
         # TBD
+
+
 
     # DEPRECATED
     def OLD_get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', nstddevs=5):
@@ -603,12 +632,12 @@ class SceneFitter():
         return s
 
 
-def apply_X_matrix() -> np.ndarray:
-    # will also handle errors and priors for me
-    ...
+# def apply_X_matrix() -> np.ndarray:
+#     # will also handle errors and priors for me
+#     ...
 
-def assemble_X_matrix() -> np.ndarray:
-    ...
+# def assemble_X_matrix() -> np.ndarray:
+#     ...
 
 
 
@@ -631,10 +660,10 @@ def assemble_X_matrix() -> np.ndarray:
 
 # sf = SceneFitter(flux, ra, dec, roll)
 
-# sf.estimate_wcs()
-# sf.estimate_flux()
-# sf.estimate_psf()
-# sf.estimate_wcs()
-# sf.estimate_psf()
+# self.estimate_wcs()
+# self.estimate_flux()
+# self.estimate_psf()
+# self.estimate_wcs()
+# self.estimate_psf()
 
-# sf.estimate_scene()
+# self.estimate_scene()
