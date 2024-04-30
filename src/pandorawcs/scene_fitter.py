@@ -197,7 +197,7 @@ class SceneFitter():
     def estimate_complex_psf() -> np.ndarray:
         ...
 
-    def _convert_to_radial_coordinates(self,) -> np.ndarray:
+    def _convert_to_radial_coordinates(self) -> np.ndarray:
         """May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting."""
         # z is normalized and in log space
         z = np.log((self.y / self.max_contributor_flux))

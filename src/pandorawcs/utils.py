@@ -274,6 +274,9 @@ def select_nth_min_group(xdata, ydata, n_bin=10, k=0):
 def func_line(x, a, b):
     return a * x + b
 
+def func_parabola(x, a, b, c):
+    return a*(x**2) + b*(x) + c
+
 def iterative_sigma_clip(x, y, maxiters=5, cenfunc=None, sigma_clip_kwargs=None, cenfunc_kwargs=None):
     """Docstring"""
     x_new = x.copy()
@@ -303,14 +306,19 @@ def iterative_sigma_clip(x, y, maxiters=5, cenfunc=None, sigma_clip_kwargs=None,
     final_mask = np.zeros_like(x, dtype=bool)
     final_mask[indices] = True
 
-    return x_new, y_new, final_mask
+    # return as masked arrays
+    x_masked = np.ma.masked_where(~final_mask, x)
+    y_masked = np.ma.masked_where(~final_mask, y)
+
+    return x_masked, y_masked, final_mask
 
 
-def custom_fit(xdata, ydata, n_bin=10, k=1):
+def custom_fit(xdata, ydata, n_bin=10, k=1, fit_func=None):
     # min_x, min_y = select_min_group(xdata, ydata, n_bin)  # maybe change this to select median? or percentile range?
     min_x, min_y = select_nth_min_group(xdata, ydata, n_bin, k=k)
-    popt, pcov = curve_fit(func_line, min_x, min_y)
-    return func_line(xdata, *popt)
+    # popt, pcov = curve_fit(func_line, min_x, min_y)
+    popt, pcov = curve_fit(fit_func, min_x, min_y)
+    return fit_func(xdata, *popt)
 
 
 #  QUERY FUNCTIONS

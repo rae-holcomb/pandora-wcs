@@ -4,6 +4,7 @@
 # my own stuff
 src/pandorawcs/sandbox/
 data/*
+ignore_stuff/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
