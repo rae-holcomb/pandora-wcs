@@ -94,7 +94,7 @@ class SceneFitter():
         # the PSF
         # our very first placeholder psf is gaussian with std (defaults to 1)
         # g0 = la.lnGaussian1DGenerator('r', stddev_prior=(initial_std, initial_std_prior))
-        g0 = la.lnGaussian2DGenerator('dx', 'dy', 
+        g0 = la.lnGaussian2DGenerator('x', 'y', 
                                       stddev_x_prior=(self.initial_std, self.initial_std_prior), stddev_y_prior=(self.initial_std, self.initial_std_prior))
         self.update_psf(g0)
 
@@ -322,12 +322,6 @@ class SceneFitter():
 
         
 
-    # def estimate_ss_mask(self, psf, tolerance=0.99, min_flux=25) -> np.ndarray:
-    #     """Calculates the single source mask for a given psf."""
-    #     cont_ratio = self.calc_contamination_ratio()
-    #     self.ss_mask = cont_ratio > tolerance     # <-- just update, or also return?
-
-
     # FUNCTIONS FOR FLUX FITTING
 
     def _fit_gaussian_flux_coeff(self, std=None, source_flux=None) -> Tuple[float, float, float, float]:
@@ -335,29 +329,29 @@ class SceneFitter():
         New version, does a better job fitting for the shifts.
         For a given standard deviation, finds a constant flux multiplier for the whole image. Depends on the current psf. (Currently restricted to a pure gaussian psf.)
         
-        Output: flux_coeff, dx, dy, rmse"""
+        Output: flux_coeff, x_shift, y_shift, rmse"""
         if std is None:
             std = self.initial_std
         if source_flux is None:
             source_flux = self.gaia_flux
 
         # set up 2d gaussian with a set stddev
-        g1 = la.lnGaussian2DGenerator('dx', 'dy', stddev_x_prior=(std, 1), stddev_y_prior=(std, 1))
-        g1.fit(dx=self.dx, dy=self.dy, data=self.z, errors=self.zerr)#, mask=data_mask)
+        g1 = la.lnGaussian2DGenerator('x', 'y', stddev_x_prior=(std, 1), stddev_y_prior=(std, 1))
+        g1.fit(x=self.dx, y=self.dy, data=self.z, errors=self.zerr)#, mask=data_mask)
 
         # now add in the gradient and fit
         dg1 = g1.gradient
         model = g1 + dg1
-        model.fit(dx=self.dx, dy=self.dy, data=self.z, errors=self.zerr)#, mask=data_mask)
+        model.fit(x=self.dx, y=self.dy, data=self.z, errors=self.zerr)#, mask=data_mask)
 
         print(model.mu[0])
 
         # recover the variables of interest
-        flux_coeff = 10**(model.mu[0])
+        flux_coeff = np.exp(model.mu[0])
         xshift, yshift = model.mu[-2], model.mu[-1]
-        rmse = np.sqrt(np.mean((self.z - model.evaluate(dx=self.dx, dy=self.dy))**2))
+        rmse = np.sqrt(np.mean((self.z - model.evaluate(x=self.dx, y=self.dy))**2))
 
-        return flux_coeff, xshift, yshift, rmse
+        return model, flux_coeff, xshift, yshift, rmse
         
     def _fit_gaussian_flux_coeff_OLD(self, std=None, source_flux=None) -> Tuple[float, float, float, float]:
         """
@@ -392,12 +386,13 @@ class SceneFitter():
 
         return flux_coeff, dx, dy, rmse
 
-    def update_initial_flux_coeff(self, stds: list = np.arange(0.8, 2., 0.1), source_flux=None, plot: bool=False,) -> Tuple[float, float]:
+    def update_initial_flux_coeff_OLD(self, stds: list = np.arange(0.8, 2., 0.1), source_flux=None, plot: bool=False,) -> Tuple[float, float]:
         """For a grid of standard deviations, finds the std and associated flux coefficient that best fits the data. Updates the class variables with this information."""
         if source_flux is None:
             source_flux = self.gaia_flux
 
         # set up arrays
+        psfs = [None] * len(stds)
         flux_coeffs = np.zeros_like(stds)
         xshifts = np.zeros_like(stds)
         yshifts = np.zeros_like(stds)
@@ -405,7 +400,9 @@ class SceneFitter():
 
         # loop through
         for ind, std in enumerate(stds):
-            flux_coeff, xshift, yshift, rmse = self._fit_gaussian_flux_coeff(std=std, source_flux=source_flux)
+            new_psf, flux_coeff, xshift, yshift, rmse = self._fit_gaussian_flux_coeff(std=std, source_flux=source_flux)
+            print(new_psf)
+            psfs[ind] = new_psf
             flux_coeffs[ind] = flux_coeff
             xshifts[ind], yshifts[ind] = xshift, yshift
             rmses[ind] = rmse
@@ -437,7 +434,7 @@ class SceneFitter():
             ax[1].set_xlabel('STD')
             fig.tight_layout()
 
-        return std, flux_coeff
+        return std, flux_coeff, psfs
      
 
     def fit_flux_weights() -> np.ndarray:
@@ -467,15 +464,15 @@ class SceneFitter():
                 self.C0 + (self.naxis2+1)/2]]
         return cutout
 
-    def _get_psf_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', dx=0, dy=0, nstddevs=5) -> utils.SparseWarp3D:
+    def _get_psf_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', xshift=0, yshift=0, nstddevs=5) -> utils.SparseWarp3D:
         """Generates a scene from the current psf. Currently does NOT generate gradients of the scene."""    
         if std is None:
             std = self.initial_std
         if source_flux is None:
             source_flux = self.source_flux
 
-        xval = self.df[x_col] + dx
-        yval = self.df[y_col] + dy
+        xval = self.df[x_col] + xshift
+        yval = self.df[y_col] + yshift
 
         # row and column grids
         gR, gC = np.mgrid[
@@ -489,7 +486,7 @@ class SceneFitter():
 
         # rads = np.hypot(ggR, ggC)
         rads, thetas = np.hypot(ggR, ggC), np.arctan2(ggC, ggR)
-        source = np.exp(self.psf.evaluate(dx=ggR, dy=ggC, r=rads.ravel(), theta=thetas).reshape(ggR.shape))
+        source = np.exp(self.psf.evaluate(x=ggR, y=ggC, r=rads.ravel(), theta=thetas).reshape(ggR.shape))
 
         scene = utils.SparseWarp3D(
                         source * source_flux,
@@ -593,7 +590,7 @@ class SceneFitter():
         
         return s, ds_x, ds_y
 
-    def _get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', dx=0, dy=0, nstddevs=5):
+    def _get_gaussian_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', xshift=0, yshift=0, nstddevs=5):
         """Creates a model image with dimensions [n_sources, x, y] where each slice contains the gaussian for a single source in the image. Also calculates the x and y gradients of the gaussian scene."""
         if std is None:
             std = self.initial_std
@@ -606,8 +603,8 @@ class SceneFitter():
             np.floor(-nstddevs * std) : np.ceil(nstddevs * std) + 1,
         ]
 
-        xval = self.df[x_col] + dx
-        yval = self.df[y_col] + dy
+        xval = self.df[x_col] + xshift
+        yval = self.df[y_col] + yshift
 
         gauss = utils.gaussian_2d(
             gR[:, :, None],
