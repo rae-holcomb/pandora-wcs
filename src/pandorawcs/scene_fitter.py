@@ -84,7 +84,7 @@ class SceneFitter():
         self.ra0, self.dec0 = c.ra.deg, c.dec.deg
 
         # NOTE: Clean up these stddev values later!
-        
+
         # other attributes that will change as we fit the psf
         self.initial_std = initial_std   # initial estimate of the std for a purely gaussian psf
         self.stddev_x = initial_std   # initial estimate of the std for a purely gaussian psf
@@ -267,15 +267,15 @@ class SceneFitter():
     def estimate_complex_psf() -> np.ndarray:
         ...
 
-    def _convert_to_radial_coordinates(self) -> np.ndarray:
+    def _convert_to_radial_coordinates(self, xshift=0, yshift=0) -> np.ndarray:
         """May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting."""
         # z is normalized and in log space
         z = np.log((self.y / self.max_contributor_flux))
         zerr = 2.5 * self.yerr/self.y * np.log(10)
 
         # get dx, dy, r, and phi
-        dx = np.hstack(self.R.ravel() - self.df.iloc[self.max_contributor_ind]['X0'].to_numpy())
-        dy = np.hstack(self.C.ravel() - self.df.iloc[self.max_contributor_ind]['Y0'].to_numpy())
+        dx = np.hstack(self.R.ravel() - (self.df.iloc[self.max_contributor_ind]['X0'].to_numpy() + xshift))
+        dy = np.hstack(self.C.ravel() - (self.df.iloc[self.max_contributor_ind]['Y0'].to_numpy() + yshift))
         z, zerr, dx, dy, = z[self.ss_mask], zerr[self.ss_mask], dx[self.ss_mask], dy[self.ss_mask] 
         r, phi = np.hypot(dx, dy), np.arctan2(dy, dx)
 
@@ -331,7 +331,15 @@ class SceneFitter():
         
 
     # FUNCTIONS FOR FLUX FITTING
-    def do_initial_fit(self, std=None, source_flux=None, update=False):
+    def do_initial_fit(self, source_flux=None,
+                       std=None,
+                       gradient_prior_mu=np.array([0,0,0]),
+                       gradient_prior_sigma=np.array([np.inf,1,1]),
+                       second_level_fit=True,
+                       update=False):
+        """Does a fit for the flux coefficient and xy offsets of the image, as well as an estimate for the xy standard deviations of a simple gaussian psf. Intended to be used as a first-step estimation to refine the single source mask.
+        
+        `second_level_fit` does a two step fitting process to ensure that the shifts are fitted using a gradient with the same stddev as the psf gaussian."""
         if std is None:
                 std = self.initial_std
         if source_flux is None:
@@ -343,15 +351,32 @@ class SceneFitter():
 
         # now add in the gradient and fit
         dg1 = g1.gradient
+        dg1.prior_mu = gradient_prior_mu        # [0,0,0] by default
+        dg1.prior_sigma = gradient_prior_sigma  # [inf,1,1] by default
         model = g1 + dg1
+
         model.fit(x=self.dx, y=self.dy, data=self.z, errors=self.zerr)#, mask=data_mask)
 
+        # redo the fit but lock the stddev of the gradient to match the fit gaussian
+        if second_level_fit:
+            g2 = model[0].copy()
+            g2.update_priors()
+
+            dg2 = g2.gradient
+            dg2.prior_mu = gradient_prior_mu
+            dg2.prior_sigma = gradient_prior_sigma
+            model = g2 + dg2
+            model.fit(x=self.dx, y=self.dy, data=self.z, errors=self.zerr)
+
         if update:
-            self.update_psf(model)
+            # self.update_psf(model)
             self.gaia_flux_coeff = np.exp(model.mu[0])
             self.stddev_x = model[0].stddev_x
             self.stddev_y = model[0].stddev_y
             _, self.xshift, self.yshift = model[1].fit_mu
+
+            self.update_psf(model)
+            # self.update_psf(model[0])
             
         # return the psf
         return model
