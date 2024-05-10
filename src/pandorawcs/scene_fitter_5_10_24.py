@@ -93,8 +93,8 @@ class SceneFitter():
         self.initial_std_prior = initial_std_prior
         self.xshift = 0
         self.yshift = 0
+        self.gaia_flux_coeff = gaia_flux_coeff
         self.source_weights = np.ones(len(self.df)) # weights for individual sources
-        # self.gaia_flux_coeff = gaia_flux_coeff  # <- working on removing the need for this
 
         # the PSF
         # our very first placeholder psf is gaussian with std (defaults to 1)
@@ -113,7 +113,6 @@ class SceneFitter():
             # self.max_contributor_ind 
             # self.max_contributor_flux 
             # self.r, self.th, self.z, self.zerr, self.dx, self.dy 
-            # self.outlier_mask
 
         # delete later
         if False :
@@ -176,8 +175,7 @@ class SceneFitter():
 
     @property
     def source_flux(self):
-        return self.gaia_flux * self.source_weights
-        # return self.gaia_flux * self.gaia_flux_coeff * self.source_weights
+        return self.gaia_flux * self.gaia_flux_coeff * self.source_weights
 
 
     # These functions are "collected" versions of their processes, fill out later
@@ -204,15 +202,9 @@ class SceneFitter():
 
     # FUNCTIONS FOR PSF ESTIMATION
 
-    def update_psf(self, 
-                   psf: la.generator.Generator = None,
-                   xshift: float = None,
-                   yshift: float = None,
-
-                   std=None, nstddevs=5, 
-                   tolerance=0.99, min_flux=25,) -> None:
+    def update_psf(self, psf: la.generator.Generator, std=None, nstddevs=5, tolerance=0.99, min_flux=25,) -> None:
         """
-        Updates the PSF of the scene. Can also be used to update the x and y shifts. Also automatically update values that derive from the PSF, including contamination variables, single source mass, and radial coordinates.
+        Updates the PSF of the scene. Also automatically update values that derive from the PSF, including contamination variables, single source mass, and radial coordinates.
         
         Inputs:
             psf - an lamatrix generator object
@@ -223,16 +215,11 @@ class SceneFitter():
             warnings.warn("psf must be an lamatrix.generator.Generator object.")
 
         # set the psf
-        if psf is not None:
-            self.psf = psf
-        if xshift is not None:
-            self.xshift = xshift
-        if yshift is not None:
-            self.yshift = yshift
+        self.psf = psf
 
         # generate the scene (and later also the gradients?)
         # scene, _, _ = self._get_psf_scene(std=std, nstddevs=nstddevs)
-        scene = self._get_psf_scene(std=std, nstddevs=nstddevs)#, apply_shifts=True)
+        scene = self._get_psf_scene(std=std, nstddevs=nstddevs)
 
         # calculate the contamination ratio, etc. 
         cont_ratio, max_contributor_ind, max_contributor_flux = self.calc_contamination_ratio(scene)
@@ -252,9 +239,6 @@ class SceneFitter():
         self.max_contributor_ind = max_contributor_ind
         self.max_contributor_flux = max_contributor_flux
         self.r, self.th, self.z, self.zerr, self.dx, self.dy = self._convert_to_radial_coordinates()
-
-        # will need to update the outlier mask in a separate function call
-        self.outlier_mask = np.ones_like(self.r).astype(bool)
 
         pass
 
@@ -283,24 +267,15 @@ class SceneFitter():
     def estimate_complex_psf() -> np.ndarray:
         ...
 
-    def _convert_to_radial_coordinates(self, xshift=None, yshift=None) -> np.ndarray:
-        """
-        NOTE: Currenly the x and y shift capability is removed bc it isn't working right. 
-
-        May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting.
-        """
-        # if xshift is None:
-        #     xshift = self.xshift
-        # if yshift is None:
-        #     yshift = self.yshift
-
+    def _convert_to_radial_coordinates(self, xshift=0, yshift=0) -> np.ndarray:
+        """May move or change this later, but intended to be a helper function which gets the xy coordinates of image into an appropriate formate for radial psf fitting."""
         # z is normalized and in log space
         z = np.log((self.y / self.max_contributor_flux))
         zerr = 2.5 * self.yerr/self.y * np.log(10)
 
         # get dx, dy, r, and phi
-        dx = np.hstack(self.R.ravel() - (self.df.iloc[self.max_contributor_ind]['X0'].to_numpy())) # + xshift))
-        dy = np.hstack(self.C.ravel() - (self.df.iloc[self.max_contributor_ind]['Y0'].to_numpy())) # + yshift))
+        dx = np.hstack(self.R.ravel() - (self.df.iloc[self.max_contributor_ind]['X0'].to_numpy() + xshift))
+        dy = np.hstack(self.C.ravel() - (self.df.iloc[self.max_contributor_ind]['Y0'].to_numpy() + yshift))
         z, zerr, dx, dy, = z[self.ss_mask], zerr[self.ss_mask], dx[self.ss_mask], dy[self.ss_mask] 
         r, phi = np.hypot(dx, dy), np.arctan2(dy, dx)
 
@@ -311,7 +286,7 @@ class SceneFitter():
         rmse = np.sqrt(np.mean((self.y - self.model_image.ravel())**2))
         return rmse
 
-    def calculate_outliers(self) -> np.ndarray:
+    def custom_sigma_clip() -> np.ndarray:
         """Still deciding if this lives here or in utils.py"""
         raise NotImplementedError
 
@@ -434,17 +409,12 @@ class SceneFitter():
                 self.C0 + (self.naxis2+1)/2]]
         return cutout
 
-    def _get_psf_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', xshift=None, yshift=None, nstddevs=5) -> utils.SparseWarp3D:
+    def _get_psf_scene(self, source_flux=None, std=None, x_col='X0', y_col='Y0', xshift=0, yshift=0, nstddevs=5) -> utils.SparseWarp3D:
         """Generates a scene from the current psf. Currently does NOT generate gradients of the scene."""    
         if std is None:
             std = self.initial_std
         if source_flux is None:
             source_flux = self.source_flux
-        if xshift is None:
-            xshift = self.xshift
-        if yshift is None:
-            yshift = self.yshift
-
 
         xval = self.df[x_col] + xshift
         yval = self.df[y_col] + yshift
